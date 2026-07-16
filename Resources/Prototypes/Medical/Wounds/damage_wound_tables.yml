@@ -1,0 +1,12 @@
+# Maps vanilla damage types onto wound types. Damage types absent here are never converted into
+# wounds (Poison, Radiation, Bloodloss, Asphyxiation, ...) and follow the vanilla path untouched.
+
+- type: damageWoundTable
+  id: DefaultHumanoid
+  entries:
+    Blunt:    { wound: Bruise,   severityPerDamage: 1.0 }
+    Slash:    { wound: Cut,      severityPerDamage: 1.0 }
+    Piercing: { wound: Puncture, severityPerDamage: 1.0 }
+    Heat:     { wound: Burn,     severityPerDamage: 1.0 }
+    Shock:    { wound: Burn,     severityPerDamage: 0.8 }
+    Cold:     { wound: Burn,     severityPerDamage: 0.7 }

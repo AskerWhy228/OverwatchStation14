@@ -25,6 +25,7 @@
         children:
         - id: Ointment
           amount: 2
+        - id: WoundOintment
         - id: PillCanisterKelotane
         - id: PillCanisterDermaline
 
@@ -39,6 +40,7 @@
         children:
         - id: Brutepack
         - id: Gauze
+        - id: WoundBandage
         - id: PillCanisterIron
         - id: PillCanisterCopper
 

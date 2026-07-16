@@ -166,6 +166,7 @@
   id: BaseSpeciesMobOrganic
   save: false
   components:
+  - type: Woundable
   - type: Hunger
   - type: Thirst
   - type: Barotrauma

@@ -1,0 +1,55 @@
+# Phase-0 dedicated wound-treatment items. These act on the wound layer (WoundTreatmentItemComponent)
+# rather than the vanilla damage pool directly; the wound system mirrors the healing back onto the pool.
+
+- type: entity
+  name: bandage
+  description: A roll of bandage for dressing cuts, punctures and bruises.
+  parent: BaseItem
+  id: WoundBandage
+  components:
+  - type: Sprite
+    sprite: Objects/Specific/Medical/medical.rsi
+    state: gauze
+  - type: Item
+    size: Small
+    sprite: Objects/Specific/Medical/medical.rsi
+    heldPrefix: gauze
+    storedRotation: -90
+  - type: WoundTreatmentItem
+    treats:
+    - Bruise
+    - Cut
+    - Puncture
+    treatment: Bandaged
+    instantHeal: 3
+    delay: 2
+    selfDelayMultiplier: 2
+  - type: LimitedCharges
+    maxCharges: 10
+  - type: StaticPrice
+    price: 0
+
+- type: entity
+  name: burn ointment
+  description: A tube of soothing ointment for dressing burns.
+  parent: BaseItem
+  id: WoundOintment
+  components:
+  - type: Sprite
+    sprite: Objects/Specific/Medical/medical.rsi
+    state: ointment
+  - type: Item
+    size: Small
+    sprite: Objects/Specific/Medical/medical.rsi
+    heldPrefix: ointment
+  - type: WoundTreatmentItem
+    treats:
+    - Burn
+    treatment: Salved
+    instantHeal: 3
+    delay: 2
+    selfDelayMultiplier: 2
+  - type: LimitedCharges
+    maxCharges: 10
+  - type: StaticPrice
+    price: 0

@@ -1,0 +1,15 @@
+# Weighted random zone selection used when a hit does not specify a target zone (FR-3).
+
+- type: hitZoneWeights
+  id: DefaultHumanoid
+  weights:
+    Chest: 40
+    Head: 10
+    LeftArm: 10
+    RightArm: 10
+    LeftHand: 2.5
+    RightHand: 2.5
+    LeftLeg: 10
+    RightLeg: 10
+    LeftFoot: 2.5
+    RightFoot: 2.5

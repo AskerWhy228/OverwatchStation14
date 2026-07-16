@@ -1,0 +1,104 @@
+# Phase-0 wound types. Stages map accumulated Severity to a discrete, localised description.
+# selfHealBelow / selfHealRate drive the FR-6 self-heal tick (only while treated).
+# bleedFactor is populated for the future BleedingSystem and read by nothing in phase 0.
+
+- type: wound
+  id: Bruise
+  name: wound-bruise
+  damageType: Blunt
+  stages:
+    - threshold: 0
+      name: wound-bruise-stage-1
+    - threshold: 10
+      name: wound-bruise-stage-2
+    - threshold: 25
+      name: wound-bruise-stage-3
+    - threshold: 45
+      name: wound-bruise-stage-4
+  selfHealBelow: 15
+  selfHealRate: 0.5
+  treatableBy: [ Bandaged ]
+  bleedFactor: 0.1
+
+- type: wound
+  id: Cut
+  name: wound-cut
+  damageType: Slash
+  stages:
+    - threshold: 0
+      name: wound-cut-stage-1
+    - threshold: 10
+      name: wound-cut-stage-2
+    - threshold: 25
+      name: wound-cut-stage-3
+    - threshold: 45
+      name: wound-cut-stage-4
+  selfHealBelow: 15
+  selfHealRate: 0.5
+  treatableBy: [ Bandaged, Sutured ]
+  bleedFactor: 0.4
+
+- type: wound
+  id: Puncture
+  name: wound-puncture
+  damageType: Piercing
+  stages:
+    - threshold: 0
+      name: wound-puncture-stage-1
+    - threshold: 10
+      name: wound-puncture-stage-2
+    - threshold: 25
+      name: wound-puncture-stage-3
+    - threshold: 45
+      name: wound-puncture-stage-4
+  selfHealBelow: 15
+  selfHealRate: 0.5
+  treatableBy: [ Bandaged, Sutured ]
+  bleedFactor: 0.5
+
+- type: wound
+  id: Burn
+  name: wound-burn
+  damageType: Heat
+  stages:
+    - threshold: 0
+      name: wound-burn-stage-1
+    - threshold: 10
+      name: wound-burn-stage-2
+    - threshold: 25
+      name: wound-burn-stage-3
+    - threshold: 45
+      name: wound-burn-stage-4
+  selfHealBelow: 15
+  selfHealRate: 0.5
+  treatableBy: [ Salved ]
+  bleedFactor: 0.0
+
+# Registered for future phases, but no damage table converts into these in phase 0.
+- type: wound
+  id: Fracture
+  name: wound-fracture
+  damageType: Blunt
+  stages:
+    - threshold: 0
+      name: wound-fracture-stage-1
+    - threshold: 30
+      name: wound-fracture-stage-2
+  selfHealBelow: 0
+  selfHealRate: 0.0
+  treatableBy: [ ]
+  bleedFactor: 0.0
+
+- type: wound
+  id: InternalBleeding
+  name: wound-internal-bleeding
+  damageType: Piercing
+  stages:
+    - threshold: 0
+      name: wound-internal-bleeding-stage-1
+    - threshold: 30
+      name: wound-internal-bleeding-stage-2
+  selfHealBelow: 0
+  selfHealRate: 0.0
+  treatableBy: [ Sutured ]
+  bleedFactor: 1.0
