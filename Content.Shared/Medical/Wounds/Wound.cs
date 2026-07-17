@@ -1,3 +1,4 @@
+using Content.Shared.Damage.Prototypes;
 using Content.Shared.FixedPoint;
 using Content.Shared.Medical.Wounds.Prototypes;
 using Robust.Shared.Prototypes;
@@ -25,6 +26,14 @@ public partial struct Wound
     /// </summary>
     [DataField]
     public WoundBodyPart Part;
+
+    /// <summary>
+    /// The vanilla damage type that produced this wound. Wounds mirror their healing back onto this exact
+    /// type, not the wound prototype's single canonical type: several damage types can map onto one wound
+    /// (e.g. Shock and Cold both map to Burn), and collapsing them would heal the wrong vanilla pool.
+    /// </summary>
+    [DataField]
+    public ProtoId<DamageTypePrototype> SourceType;
 
     /// <summary>
     /// Accumulated severity of the wound. Drives the discrete stage via the prototype thresholds.

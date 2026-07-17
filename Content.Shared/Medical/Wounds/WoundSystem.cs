@@ -1,5 +1,6 @@
 using System.Linq;
 using Content.Shared.Damage;
+using Content.Shared.Damage.Components;
 using Content.Shared.Damage.Prototypes;
 using Content.Shared.Damage.Systems;
 using Content.Shared.FixedPoint;
@@ -31,6 +32,9 @@ public sealed partial class WoundSystem : EntitySystem
     private const float HealTickPeriod = 15f;
     private float _healAccumulator;
 
+    /// <summary>Scratch buffer so the self-heal tick never mutates the query it is iterating over.</summary>
+    private readonly List<EntityUid> _healQueue = new();
+
     /// <summary>Re-treating an existing wound with more than this much added severity rips the dressing off.</summary>
     private static readonly FixedPoint2 TreatmentResetThreshold = FixedPoint2.New(5);
 
@@ -54,8 +58,15 @@ public sealed partial class WoundSystem : EntitySystem
         if (_mirroring)
             return;
 
-        if (args.DamageDelta is not { } delta)
+        // A null or empty delta means the pool was set directly (SetDamage / SetAllDamage / ClearAllDamage,
+        // e.g. Rejuvenate) rather than dealt/healed. Those paths bypass the per-type delta entirely, so the
+        // wound layer would otherwise never learn the pool was zeroed and would keep phantom wounds forever.
+        // Reconcile the wounds down to whatever the pool now holds.
+        if (args.DamageDelta is not { } delta || delta.DamageDict.Count == 0)
+        {
+            ReconcileWithPool(ent);
             return;
+        }
 
         foreach (var (type, amount) in delta.DamageDict)
         {
@@ -86,7 +97,7 @@ public sealed partial class WoundSystem : EntitySystem
             return;
 
         var severity = amount * entry.SeverityPerDamage * ent.Comp.SeverityMultiplier;
-        AddOrMergeWound(ent, entry.Wound, chosen, severity, amount);
+        AddOrMergeWound(ent, entry.Wound, type, chosen, severity, amount);
     }
 
     /// <summary>
@@ -98,8 +109,12 @@ public sealed partial class WoundSystem : EntitySystem
         if (!TryGetEntry(ent.Comp, type, out var entry))
             return;
 
-        var toRemove = amount * entry.SeverityPerDamage;
-        ReduceWoundsOfType(ent, entry.Wound, toRemove, mirror: false);
+        // Mirror the exact conversion used on the way in (including SeverityMultiplier) so a full vanilla heal
+        // removes exactly the severity a full vanilla hit added; an asymmetric factor drifts wounds vs. pool.
+        var toRemove = amount * entry.SeverityPerDamage * ent.Comp.SeverityMultiplier;
+        // Reduce wounds that actually came from this vanilla type, not every wound sharing a prototype: Shock,
+        // Cold and Heat all map to Burn, so keying on the prototype would let healing one type eat another's wounds.
+        ReduceWoundsOfSourceType(ent, type, toRemove, mirror: false);
     }
 
     /// <summary>
@@ -109,6 +124,7 @@ public sealed partial class WoundSystem : EntitySystem
     private void AddOrMergeWound(
         Entity<WoundableComponent> ent,
         ProtoId<WoundPrototype> woundType,
+        ProtoId<DamageTypePrototype> sourceType,
         WoundBodyPart part,
         FixedPoint2 severity,
         FixedPoint2 rawDamage)
@@ -118,8 +134,9 @@ public sealed partial class WoundSystem : EntitySystem
 
         var wounds = ent.Comp.Wounds;
 
-        // Same type on same zone -> merge.
-        var index = FindWound(wounds, woundType, part);
+        // Same wound type from the same source on the same zone -> merge. Source type is part of the key so a
+        // Shock burn and a Heat burn stay separate wounds and each mirrors back onto its own vanilla pool.
+        var index = FindWound(wounds, woundType, sourceType, part);
         if (index >= 0)
         {
             var merged = wounds[index];
@@ -136,45 +153,31 @@ public sealed partial class WoundSystem : EntitySystem
             return;
         }
 
+        // Zone saturated with distinct wounds. We deliberately do NOT merge this new source into an existing
+        // wound of a different source: the merged wound would then mirror its healing onto the wrong vanilla
+        // pool. Instead the surplus damage simply stays purely vanilla and is not recorded as a wound. The pool
+        // is authoritative, so vanilla healing and reconciliation still handle that damage safely without a
+        // backing wound - it just isn't localised. This keeps the wound list bounded by MaxWounds per zone.
         var onPart = CountWoundsOnPart(wounds, part);
-        if (onPart < ent.Comp.MaxWounds)
+        if (onPart >= ent.Comp.MaxWounds)
+            return;
+
+        var wound = new Wound
         {
-            var wound = new Wound
-            {
-                Type = woundType,
-                Part = part,
-                Severity = severity,
-                Damage = rawDamage,
-                Treatment = WoundTreatment.None,
-            };
-            wound.BleedRate = ComputeBleedRate(wound);
-            wounds.Add(wound);
+            Type = woundType,
+            SourceType = sourceType,
+            Part = part,
+            Severity = severity,
+            Damage = rawDamage,
+            Treatment = WoundTreatment.None,
+        };
+        wound.BleedRate = ComputeBleedRate(wound);
+        wounds.Add(wound);
 
-            EnsureActive(ent);
-            Dirty(ent);
-            var added = new WoundAddedEvent(ent, wound);
-            RaiseLocalEvent(ent, ref added);
-            return;
-        }
-
-        // Zone is full: pour severity into the heaviest wound of the same type, else the heaviest overall.
-        var target = FindHeaviestOnPart(wounds, part, woundType);
-        if (target < 0)
-            target = FindHeaviestOnPart(wounds, part, null);
-        if (target < 0)
-            return;
-
-        var heaviest = wounds[target];
-        heaviest.Severity += severity;
-        heaviest.Damage += rawDamage;
-        if (severity > TreatmentResetThreshold)
-            heaviest.Treatment = WoundTreatment.None;
-        heaviest.BleedRate = ComputeBleedRate(heaviest);
-        wounds[target] = heaviest;
-
+        EnsureActive(ent);
         Dirty(ent);
-        var ev = new WoundChangedEvent(ent, heaviest);
-        RaiseLocalEvent(ent, ref ev);
+        var added = new WoundAddedEvent(ent, wound);
+        RaiseLocalEvent(ent, ref added);
     }
 
     /// <summary>
@@ -182,9 +185,9 @@ public sealed partial class WoundSystem : EntitySystem
     /// When <paramref name="mirror"/> is true also reduces the vanilla damage pool by the equivalent
     /// raw damage (used when the reduction originates from wound treatment/self-heal, not vanilla healing).
     /// </summary>
-    private void ReduceWoundsOfType(
+    private void ReduceWoundsOfSourceType(
         Entity<WoundableComponent> ent,
-        ProtoId<WoundPrototype> woundType,
+        ProtoId<DamageTypePrototype> sourceType,
         FixedPoint2 severityToRemove,
         bool mirror)
     {
@@ -196,7 +199,7 @@ public sealed partial class WoundSystem : EntitySystem
         var totalSeverity = FixedPoint2.Zero;
         foreach (var w in wounds)
         {
-            if (w.Type == woundType)
+            if (w.SourceType == sourceType)
                 totalSeverity += w.Severity;
         }
 
@@ -211,7 +214,7 @@ public sealed partial class WoundSystem : EntitySystem
         for (var i = wounds.Count - 1; i >= 0; i--)
         {
             var wound = wounds[i];
-            if (wound.Type != woundType)
+            if (wound.SourceType != sourceType)
                 continue;
 
             var share = severityToRemove * (wound.Severity / totalSeverity);
@@ -249,9 +252,10 @@ public sealed partial class WoundSystem : EntitySystem
             ? wound.Damage * (severity / wound.Severity)
             : wound.Damage;
 
-        if (mirror && _proto.TryIndex(wound.Type, out var proto))
+        if (mirror)
         {
-            var key = proto.DamageType;
+            // Mirror onto the exact vanilla type that produced this wound, so a Shock burn heals Shock and not Heat.
+            var key = wound.SourceType;
             mirroredDamage.DamageDict.TryGetValue(key, out var existing);
             mirroredDamage.DamageDict[key] = existing - damageShare;
         }
@@ -314,9 +318,19 @@ public sealed partial class WoundSystem : EntitySystem
     /// </summary>
     private void TickSelfHeal()
     {
+        // Snapshot the active set first: healing removes ActiveWoundableComponent (via UpdateActive) and mirrors
+        // damage, which raises DamageChangedEvent and can trigger further structural changes. Mutating the
+        // component being enumerated mid-iteration is undefined behaviour, so we iterate a plain list instead.
+        _healQueue.Clear();
         var query = EntityQueryEnumerator<ActiveWoundableComponent, WoundableComponent>();
-        while (query.MoveNext(out var uid, out _, out var woundable))
+        while (query.MoveNext(out var uid, out _, out _))
+            _healQueue.Add(uid);
+
+        foreach (var uid in _healQueue)
         {
+            if (!TryComp<WoundableComponent>(uid, out var woundable))
+                continue;
+
             var ent = new Entity<WoundableComponent>(uid, woundable);
             var wounds = woundable.Wounds;
             var mirrored = new DamageSpecifier();
@@ -383,11 +397,11 @@ public sealed partial class WoundSystem : EntitySystem
         return wound.Severity;
     }
 
-    private static int FindWound(List<Wound> wounds, ProtoId<WoundPrototype> type, WoundBodyPart part)
+    private static int FindWound(List<Wound> wounds, ProtoId<WoundPrototype> type, ProtoId<DamageTypePrototype> sourceType, WoundBodyPart part)
     {
         for (var i = 0; i < wounds.Count; i++)
         {
-            if (wounds[i].Type == type && wounds[i].Part == part)
+            if (wounds[i].Type == type && wounds[i].SourceType == sourceType && wounds[i].Part == part)
                 return i;
         }
 
@@ -406,25 +420,81 @@ public sealed partial class WoundSystem : EntitySystem
         return count;
     }
 
-    private static int FindHeaviestOnPart(List<Wound> wounds, WoundBodyPart part, ProtoId<WoundPrototype>? type)
+    /// <summary>
+    /// Trims wounds back down to whatever the vanilla pool now holds per damage type. Used when the pool is set
+    /// directly (SetDamage / SetAllDamage / ClearAllDamage, e.g. Rejuvenate) instead of dealt or healed: those
+    /// paths carry no per-type delta, so without this the wound layer would keep phantom wounds after a full heal.
+    /// Never touches the pool (it is already authoritative) and only ever removes severity, never adds.
+    /// </summary>
+    private void ReconcileWithPool(Entity<WoundableComponent> ent)
     {
-        var best = -1;
-        var bestSeverity = FixedPoint2.Zero;
-        for (var i = 0; i < wounds.Count; i++)
+        var wounds = ent.Comp.Wounds;
+        if (wounds.Count == 0)
+            return;
+
+        if (!TryComp<DamageableComponent>(ent, out var damageable))
+            return;
+
+        // Sum the raw damage the wounds currently account for, per vanilla source type.
+        var tracked = new Dictionary<ProtoId<DamageTypePrototype>, FixedPoint2>();
+        foreach (var w in wounds)
         {
-            var w = wounds[i];
-            if (w.Part != part)
+            tracked.TryGetValue(w.SourceType, out var acc);
+            tracked[w.SourceType] = acc + w.Damage;
+        }
+
+        var dirty = false;
+        foreach (var (type, trackedDamage) in tracked)
+        {
+            if (trackedDamage <= 0)
                 continue;
-            if (type != null && w.Type != type.Value)
-                continue;
-            if (best < 0 || w.Severity > bestSeverity)
+
+            var pool = damageable.Damage.DamageDict.GetValueOrDefault(type);
+            if (pool >= trackedDamage)
+                continue; // Pool still covers these wounds; leave them alone.
+
+            // Pool dropped below what the wounds claim: scale every wound of this source type down to fit.
+            var scale = pool <= 0 ? FixedPoint2.Zero : pool / trackedDamage;
+            for (var i = wounds.Count - 1; i >= 0; i--)
             {
-                best = i;
-                bestSeverity = w.Severity;
+                var wound = wounds[i];
+                if (wound.SourceType != type)
+                    continue;
+
+                if (scale <= 0)
+                {
+                    wounds.RemoveAt(i);
+                    var removed = new WoundRemovedEvent(ent, wound);
+                    RaiseLocalEvent(ent, ref removed);
+                    dirty = true;
+                    continue;
+                }
+
+                wound.Severity *= scale;
+                wound.Damage *= scale;
+                if (wound.Severity <= 0)
+                {
+                    wounds.RemoveAt(i);
+                    var removed = new WoundRemovedEvent(ent, wound);
+                    RaiseLocalEvent(ent, ref removed);
+                }
+                else
+                {
+                    wound.BleedRate = ComputeBleedRate(wound);
+                    wounds[i] = wound;
+                    var changed = new WoundChangedEvent(ent, wound);
+                    RaiseLocalEvent(ent, ref changed);
+                }
+
+                dirty = true;
             }
         }
 
-        return best;
+        if (dirty)
+        {
+            Dirty(ent);
+            UpdateActive(ent);
+        }
     }
 
     private void EnsureActive(Entity<WoundableComponent> ent)

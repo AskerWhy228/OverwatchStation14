@@ -105,7 +105,7 @@ public sealed class WoundSystemTest : GameTest
     }
 
     [Test]
-    public async Task ZoneWoundLimitIsRespected()
+    public async Task ZoneWoundLimitCoalescesSameSourceButNeverAcrossSources()
     {
         var pair = Pair;
         var server = pair.Server;
@@ -121,16 +121,100 @@ public sealed class WoundSystemTest : GameTest
             var woundable = entMan.GetComponent<WoundableComponent>(uid);
             var ent = new Entity<WoundableComponent>(uid, woundable);
 
-            // maxWounds is 2 for this test mob. Three distinct wound types on one zone must collapse to 2.
+            // Repeated damage of the same vanilla type always coalesces into one wound.
             wounds.ApplyDamageType(ent, "Blunt", FixedPoint2.New(10), WoundBodyPart.Chest);
-            wounds.ApplyDamageType(ent, "Slash", FixedPoint2.New(10), WoundBodyPart.Chest);
-            wounds.ApplyDamageType(ent, "Piercing", FixedPoint2.New(10), WoundBodyPart.Chest);
+            wounds.ApplyDamageType(ent, "Blunt", FixedPoint2.New(10), WoundBodyPart.Chest);
+            Assert.That(woundable.Wounds.Count(w => w.Part == WoundBodyPart.Chest), Is.EqualTo(1));
 
+            // Second distinct source fills the zone (maxWounds is 2 for this mob).
+            wounds.ApplyDamageType(ent, "Slash", FixedPoint2.New(10), WoundBodyPart.Chest);
             Assert.That(woundable.Wounds.Count(w => w.Part == WoundBodyPart.Chest), Is.EqualTo(2));
 
-            // No severity is lost when the third wound overflows into an existing one.
-            var totalSeverity = woundable.Wounds.Aggregate(FixedPoint2.Zero, (acc, w) => acc + w.Severity);
-            Assert.That(totalSeverity, Is.EqualTo(FixedPoint2.New(30)));
+            // Zone is now full. A third distinct source must NOT be merged into an existing wound of a different
+            // source (that would mirror its healing onto the wrong vanilla pool). The cap is honoured instead by
+            // leaving the surplus as pure vanilla damage, so no mis-attributed Puncture wound appears.
+            wounds.ApplyDamageType(ent, "Piercing", FixedPoint2.New(10), WoundBodyPart.Chest);
+
+            var onChest = woundable.Wounds.Where(w => w.Part == WoundBodyPart.Chest).ToList();
+            Assert.That(onChest, Has.Count.EqualTo(2));
+            Assert.That(onChest.Select(w => w.SourceType.Id), Is.EquivalentTo(new[] { "Blunt", "Slash" }));
+            Assert.That(onChest.Any(w => w.Type.Id == "Puncture"), Is.False);
+        });
+    }
+
+    [Test]
+    public async Task DirectDamageSetReconcilesWounds()
+    {
+        var pair = Pair;
+        var server = pair.Server;
+        var entMan = server.ResolveDependency<IEntityManager>();
+        var protoMan = server.ResolveDependency<IPrototypeManager>();
+        var sysMan = server.ResolveDependency<IEntitySystemManager>();
+        var damageable = sysMan.GetEntitySystem<DamageableSystem>();
+
+        var map = await pair.CreateTestMap();
+
+        await server.WaitAssertion(() =>
+        {
+            var uid = entMan.SpawnEntity(WoundTestMob, map.MapCoords);
+            var woundable = entMan.GetComponent<WoundableComponent>(uid);
+            var blunt = protoMan.Index<DamageTypePrototype>("Blunt");
+
+            damageable.ChangeDamage(uid, new DamageSpecifier(blunt, FixedPoint2.New(20)), ignoreResistances: true);
+            Assert.That(woundable.Wounds, Has.Count.EqualTo(1));
+
+            // Rejuvenate / admin heal set the pool directly with no per-type delta. The wound layer must follow
+            // the pool down to zero instead of keeping phantom wounds forever.
+            damageable.SetAllDamage(uid, FixedPoint2.Zero);
+
+            Assert.That(damageable.GetTotalDamage(uid), Is.EqualTo(FixedPoint2.Zero));
+            Assert.That(woundable.Wounds, Is.Empty);
+            Assert.That(entMan.HasComponent<ActiveWoundableComponent>(uid), Is.False);
+        });
+    }
+
+    [Test]
+    public async Task WoundMirrorsBackOntoItsOwnSourceType()
+    {
+        var pair = Pair;
+        var server = pair.Server;
+        var entMan = server.ResolveDependency<IEntityManager>();
+        var protoMan = server.ResolveDependency<IPrototypeManager>();
+        var sysMan = server.ResolveDependency<IEntitySystemManager>();
+        var damageable = sysMan.GetEntitySystem<DamageableSystem>();
+        var wounds = sysMan.GetEntitySystem<WoundSystem>();
+
+        var map = await pair.CreateTestMap();
+
+        await server.WaitAssertion(() =>
+        {
+            var uid = entMan.SpawnEntity(WoundTestMob, map.MapCoords);
+            var woundable = entMan.GetComponent<WoundableComponent>(uid);
+            var damage = entMan.GetComponent<DamageableComponent>(uid);
+            var ent = new Entity<WoundableComponent>(uid, woundable);
+
+            var shock = protoMan.Index<DamageTypePrototype>("Shock");
+            var heat = protoMan.Index<DamageTypePrototype>("Heat");
+
+            // Both map to the Burn wound, whose canonical type is Heat - but they must stay distinct wounds and
+            // each must mirror onto the exact type that caused it, or a Shock burn would heal the Heat pool.
+            damageable.ChangeDamage(uid, new DamageSpecifier(shock, FixedPoint2.New(10)), ignoreResistances: true);
+            damageable.ChangeDamage(uid, new DamageSpecifier(heat, FixedPoint2.New(10)), ignoreResistances: true);
+
+            Assert.That(woundable.Wounds.Count(w => w.Type.Id == "Burn"), Is.EqualTo(2));
+
+            var shockPoolBefore = damage.Damage.DamageDict["Shock"];
+            var heatPoolBefore = damage.Damage.DamageDict["Heat"];
+
+            var shockBurn = woundable.Wounds.FindIndex(w => w.Type.Id == "Burn" && w.SourceType.Id == "Shock");
+            Assert.That(shockBurn, Is.GreaterThanOrEqualTo(0));
+
+            wounds.TreatWound(ent, shockBurn, WoundTreatment.Salved, FixedPoint2.New(5));
+
+            // Only the Shock pool moved; the Heat pool the naive (mirror-to-canonical-type) implementation would
+            // have drained instead is untouched. This is the crux of the many-to-one mapping fix.
+            Assert.That(damage.Damage.DamageDict["Heat"], Is.EqualTo(heatPoolBefore));
+            Assert.That(damage.Damage.DamageDict["Shock"], Is.LessThan(shockPoolBefore));
         });
     }
 
