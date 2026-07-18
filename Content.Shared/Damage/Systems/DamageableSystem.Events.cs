@@ -238,7 +238,7 @@ public sealed partial class DamageableSystem
         }
 
         if (!damageDone.Empty)
-            OnEntityDamageChanged((ent, damageable), damageDone, args.InterruptsDoAfters, args.Origin);
+            OnEntityDamageChanged((ent, damageable), damageDone, args.InterruptsDoAfters, args.Origin, args.ZoneContext);
     }
 }
 
@@ -287,8 +287,9 @@ public sealed class DamageModifyEvent(DamageSpecifier damage, EntityUid? origin 
 /// <param name="Damage">The amount of damage the entity is being subject to.</param>
 /// <param name="Origin">The originator of the damage</param>
 /// <param name="InterruptsDoAfters">If the damage being dealt will interrupt do-afters</param>
+/// <param name="ZoneContext">Optional body-zone targeting context riding along with the damage (see the wound spec §B1).</param>
 [ByRefEvent]
-public readonly record struct DamageDealtEvent(DamageSpecifier Damage, EntityUid? Origin, bool InterruptsDoAfters);
+public readonly record struct DamageDealtEvent(DamageSpecifier Damage, EntityUid? Origin, bool InterruptsDoAfters, DamageZoneContext? ZoneContext = null);
 
 [Obsolete("Will be replaced with damage-model specific events; general 'took damage' can be served by DamageDealtEvent")]
 public sealed class DamageChangedEvent : EntityEventArgs
@@ -326,16 +327,24 @@ public sealed class DamageChangedEvent : EntityEventArgs
     /// </summary>
     public readonly EntityUid? Origin;
 
+    /// <summary>
+    ///     Optional body-zone targeting context that rode along with the damage (see the wound spec §B1).
+    ///     Null for healing, direct sets, state reconciliation, and non-targeted sources.
+    /// </summary>
+    public readonly DamageZoneContext? ZoneContext;
+
     public DamageChangedEvent(
         DamageableComponent damageable,
         DamageSpecifier? damageDelta,
         bool interruptsDoAfters,
-        EntityUid? origin
+        EntityUid? origin,
+        DamageZoneContext? zoneContext = null
     )
     {
         Damageable = damageable;
         DamageDelta = damageDelta;
         Origin = origin;
+        ZoneContext = zoneContext;
 
         if (DamageDelta is null)
             return;

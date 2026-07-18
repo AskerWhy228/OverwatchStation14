@@ -1,49 +1,30 @@
 using System.Linq;
-using Content.Shared.Examine;
+using Content.Shared.HealthExaminable;
 using Content.Shared.Medical.Wounds.Components;
-using Content.Shared.Verbs;
 using Robust.Shared.Utility;
 
 namespace Content.Shared.Medical.Wounds;
 
 /// <summary>
-/// FR-5: examine block listing wounds grouped by body zone. All display text is Fluent-localised.
+/// FR-5 / FR-A8: the per-zone wound list is folded into the common health-examine block (alongside the
+/// vanilla alive/crit/dead line) rather than living in its own examine section. The vanilla generalised
+/// severity line ("looks battered") is suppressed for woundable entities in <see cref="HealthExaminableSystem"/>,
+/// so the wounds fully replace it and the same damage is never described twice.
 /// </summary>
 public sealed partial class WoundSystem
 {
-    [Dependency] private ExamineSystemShared _examine = default!;
-
     private void InitializeExamine()
     {
-        SubscribeLocalEvent<WoundableComponent, GetVerbsEvent<ExamineVerb>>(OnGetExamineVerbs);
+        SubscribeLocalEvent<WoundableComponent, HealthBeingExaminedEvent>(OnHealthExamined);
     }
 
-    private void OnGetExamineVerbs(Entity<WoundableComponent> ent, ref GetVerbsEvent<ExamineVerb> args)
+    private void OnHealthExamined(Entity<WoundableComponent> ent, ref HealthBeingExaminedEvent args)
     {
-        if (!args.CanInteract || !args.CanAccess)
-            return;
-
-        if (ent.Comp.Wounds.Count == 0)
-            return;
-
-        var message = BuildWoundExamine(ent.Comp);
-        if (message.IsEmpty)
-            return;
-
-        _examine.AddDetailedExamineVerb(
-            args,
-            ent.Comp,
-            message,
-            Loc.GetString("wound-examinable-verb-text"),
-            "/Textures/Interface/VerbIcons/smite.svg.192dpi.png",
-            Loc.GetString("wound-examinable-verb-message"));
+        AppendWoundExamine(ent.Comp, args.Message);
     }
 
-    private FormattedMessage BuildWoundExamine(WoundableComponent comp)
+    private void AppendWoundExamine(WoundableComponent comp, FormattedMessage msg)
     {
-        var msg = new FormattedMessage();
-        var first = true;
-
         // Iterate zones in enum order for a stable, readable layout.
         foreach (WoundBodyPart part in Enum.GetValues(typeof(WoundBodyPart)))
         {
@@ -73,34 +54,13 @@ public sealed partial class WoundSystem
             if (entries.Count == 0)
                 continue;
 
-            if (!first)
+            if (!msg.IsEmpty)
                 msg.PushNewline();
-            first = false;
 
             msg.AddMarkupOrThrow(Loc.GetString("wound-examine-part",
-                ("part", Loc.GetString(GetPartLoc(part))),
+                ("part", Loc.GetString(WoundZoneNames.GetLocId(part))),
                 ("wounds", string.Join(", ", entries))));
         }
-
-        return msg;
-    }
-
-    private static string GetPartLoc(WoundBodyPart part)
-    {
-        return part switch
-        {
-            WoundBodyPart.Chest => "wound-zone-chest",
-            WoundBodyPart.Head => "wound-zone-head",
-            WoundBodyPart.LeftArm => "wound-zone-left-arm",
-            WoundBodyPart.RightArm => "wound-zone-right-arm",
-            WoundBodyPart.LeftHand => "wound-zone-left-hand",
-            WoundBodyPart.RightHand => "wound-zone-right-hand",
-            WoundBodyPart.LeftLeg => "wound-zone-left-leg",
-            WoundBodyPart.RightLeg => "wound-zone-right-leg",
-            WoundBodyPart.LeftFoot => "wound-zone-left-foot",
-            WoundBodyPart.RightFoot => "wound-zone-right-foot",
-            _ => "wound-zone-chest",
-        };
     }
 
     private static string GetTreatmentLoc(WoundTreatment treatment)

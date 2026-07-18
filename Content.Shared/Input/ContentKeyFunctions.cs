@@ -6,6 +6,22 @@ namespace Content.Shared.Input
     public static class ContentKeyFunctions
     {
         public static readonly BoundKeyFunction ToggleKnockdown = "ToggleKnockdown";
+
+        // Body-zone targeting (FR-A3). Unbound by default (numpad is taken by camera/zoom); rebindable in
+        // the controls menu. Recommended SS13 numpad layout: 8 head, 5 chest, 4/6 arms, 7/9 hands,
+        // 1/3 legs, 2/0 feet.
+        public static readonly BoundKeyFunction TargetHead = "TargetHead";
+        public static readonly BoundKeyFunction TargetChest = "TargetChest";
+        public static readonly BoundKeyFunction TargetLeftArm = "TargetLeftArm";
+        public static readonly BoundKeyFunction TargetRightArm = "TargetRightArm";
+        public static readonly BoundKeyFunction TargetLeftHand = "TargetLeftHand";
+        public static readonly BoundKeyFunction TargetRightHand = "TargetRightHand";
+        public static readonly BoundKeyFunction TargetLeftLeg = "TargetLeftLeg";
+        public static readonly BoundKeyFunction TargetRightLeg = "TargetRightLeg";
+        public static readonly BoundKeyFunction TargetLeftFoot = "TargetLeftFoot";
+        public static readonly BoundKeyFunction TargetRightFoot = "TargetRightFoot";
+        public static readonly BoundKeyFunction TargetCycle = "TargetCycle";
+        public static readonly BoundKeyFunction TargetCycleReverse = "TargetCycleReverse";
         public static readonly BoundKeyFunction UseItemInHand = "ActivateItemInHand";
         public static readonly BoundKeyFunction AltUseItemInHand = "AltActivateItemInHand";
         public static readonly BoundKeyFunction ActivateItemInWorld = "ActivateItemInWorld";

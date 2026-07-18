@@ -6,6 +6,7 @@ using Content.Shared.Damage.Systems;
 using Content.Shared.FixedPoint;
 using Content.Shared.Medical.Wounds.Components;
 using Content.Shared.Medical.Wounds.Prototypes;
+using Content.Shared.Stunnable;
 using Robust.Shared.Network;
 using Robust.Shared.Prototypes;
 using Robust.Shared.Random;
@@ -68,10 +69,21 @@ public sealed partial class WoundSystem : EntitySystem
             return;
         }
 
+        // Resolve the targeted zone once for the whole hit (a single swing/bullet lands on one place), so
+        // every damage type in this delta shares it. Non-targeted damage keeps the phase-0 behaviour of a
+        // fresh weighted pick per type (passing a null zone into ApplyDamageType).
+        WoundBodyPart? zone = null;
+        var wasTargeted = false;
+        if (args.ZoneContext?.Zone != null)
+        {
+            zone = ResolveZone(ent, args.ZoneContext);
+            wasTargeted = true;
+        }
+
         foreach (var (type, amount) in delta.DamageDict)
         {
             if (amount > 0)
-                ApplyDamageType(ent, type, amount, null);
+                ApplyDamageType(ent, type, amount, zone, wasTargeted);
             else if (amount < 0)
                 HealDamageType(ent, type, -amount);
         }
@@ -84,7 +96,8 @@ public sealed partial class WoundSystem : EntitySystem
         Entity<WoundableComponent> ent,
         ProtoId<DamageTypePrototype> type,
         FixedPoint2 amount,
-        WoundBodyPart? zone)
+        WoundBodyPart? zone,
+        bool wasTargeted = false)
     {
         if (amount <= 0)
             return;
@@ -92,12 +105,15 @@ public sealed partial class WoundSystem : EntitySystem
         if (!TryGetEntry(ent.Comp, type, out var entry))
             return; // No mapping: damage stays purely vanilla.
 
-        var part = zone ?? PickZone(ent.Comp);
+        var part = zone ?? PickZone(ent);
         if (part is not { } chosen)
             return;
 
-        var severity = amount * entry.SeverityPerDamage * ent.Comp.SeverityMultiplier;
-        AddOrMergeWound(ent, entry.Wound, type, chosen, severity, amount);
+        // Per-zone severity multiplier (§B4.2) is applied to severity only; the raw Damage stored on the
+        // wound stays multiplier-free so pool mirroring / TTK are unaffected while mirroring is live (§B5).
+        var zoneMult = GetZoneSeverityMultiplier(ent, chosen);
+        var severity = amount * entry.SeverityPerDamage * ent.Comp.SeverityMultiplier * zoneMult;
+        AddOrMergeWound(ent, entry.Wound, type, chosen, severity, amount, wasTargeted);
     }
 
     /// <summary>
@@ -106,15 +122,33 @@ public sealed partial class WoundSystem : EntitySystem
     /// </summary>
     private void HealDamageType(Entity<WoundableComponent> ent, ProtoId<DamageTypePrototype> type, FixedPoint2 amount)
     {
-        if (!TryGetEntry(ent.Comp, type, out var entry))
+        // Reduce the wounds that actually came from this vanilla type in proportion to how much of their
+        // tracked raw damage the pool just healed. Keying on the raw Damage (not a re-derived severity) keeps
+        // the wound layer in lockstep with the pool regardless of the per-zone / per-body severity multipliers
+        // (§B5) - a headshot wound heals at the same rate its pool damage does, with no drift.
+        // Source type is part of the key, not the wound prototype: Shock, Cold and Heat all map to Burn, so
+        // keying on the prototype would let healing one type eat another's wounds.
+        var wounds = ent.Comp.Wounds;
+
+        var totalDamage = FixedPoint2.Zero;
+        var totalSeverity = FixedPoint2.Zero;
+        foreach (var w in wounds)
+        {
+            if (w.SourceType != type)
+                continue;
+
+            totalDamage += w.Damage;
+            totalSeverity += w.Severity;
+        }
+
+        if (totalDamage <= 0 || totalSeverity <= 0)
             return;
 
-        // Mirror the exact conversion used on the way in (including SeverityMultiplier) so a full vanilla heal
-        // removes exactly the severity a full vanilla hit added; an asymmetric factor drifts wounds vs. pool.
-        var toRemove = amount * entry.SeverityPerDamage * ent.Comp.SeverityMultiplier;
-        // Reduce wounds that actually came from this vanilla type, not every wound sharing a prototype: Shock,
-        // Cold and Heat all map to Burn, so keying on the prototype would let healing one type eat another's wounds.
-        ReduceWoundsOfSourceType(ent, type, toRemove, mirror: false);
+        var fraction = amount / totalDamage;
+        if (fraction > FixedPoint2.New(1))
+            fraction = FixedPoint2.New(1);
+
+        ReduceWoundsOfSourceType(ent, type, totalSeverity * fraction, mirror: false);
     }
 
     /// <summary>
@@ -127,7 +161,8 @@ public sealed partial class WoundSystem : EntitySystem
         ProtoId<DamageTypePrototype> sourceType,
         WoundBodyPart part,
         FixedPoint2 severity,
-        FixedPoint2 rawDamage)
+        FixedPoint2 rawDamage,
+        bool wasTargeted = false)
     {
         if (severity <= 0)
             return;
@@ -176,7 +211,7 @@ public sealed partial class WoundSystem : EntitySystem
 
         EnsureActive(ent);
         Dirty(ent);
-        var added = new WoundAddedEvent(ent, wound);
+        var added = new WoundAddedEvent(ent, wound, wasTargeted);
         RaiseLocalEvent(ent, ref added);
     }
 
@@ -371,24 +406,91 @@ public sealed partial class WoundSystem : EntitySystem
         return _proto.TryIndex(comp.DamageTable, out var table) && table.Entries.TryGetValue(type, out entry);
     }
 
-    private WoundBodyPart? PickZone(WoundableComponent comp)
+    /// <summary>
+    /// Resolves the final zone for an aimed hit following the §B2 priority chain: Forced context uses the
+    /// zone verbatim; otherwise an accuracy roll against the body's profile either keeps the aimed zone or
+    /// deviates it to a miss-fallback zone. A body with no profile treats every aimed hit as guaranteed.
+    /// Only ever called when the context carries a zone, so it always returns a concrete zone.
+    /// </summary>
+    private WoundBodyPart ResolveZone(Entity<WoundableComponent> ent, DamageZoneContext ctx)
     {
-        if (!_proto.TryIndex(comp.HitZoneWeights, out var weights) || weights.Weights.Count == 0)
-            return null;
+        var aimed = ctx.Zone!.Value;
 
-        var total = weights.Weights.Values.Sum();
+        // Forced -> exact zone, no roll (surgery, scripted damage).
+        if (ctx.Forced)
+            return aimed;
+
+        // No profile on this body -> aimed hits are guaranteed (phase-0 fallback).
+        if (!TryComp<BodyZoneProfileComponent>(ent, out var profComp)
+            || !_proto.TryIndex(profComp.Profile, out var profile))
+            return aimed;
+
+        var info = profile.GetZone(aimed);
+
+        // Empty miss-fallback list means the zone is always hit; skip the roll entirely (§A4.4).
+        if (info.MissFallback.Count == 0)
+            return aimed;
+
+        var chance = ctx.Ranged ? info.HitChanceRanged : info.HitChanceMelee;
+
+        // FR-A4 modifier: a downed or stunned target is hit precisely (chance 1.0).
+        if (HasComp<KnockedDownComponent>(ent) || HasComp<StunnedComponent>(ent))
+            chance = 1f;
+
+        // Let content further adjust the chance (sprinting, aiming, ...).
+        var ev = new GetBodyZoneHitChanceEvent(aimed, ctx.Ranged, chance);
+        RaiseLocalEvent(ent, ref ev);
+        chance = Math.Clamp(ev.Chance, 0f, 1f);
+
+        if (_random.Prob(chance))
+            return aimed;
+
+        // Missed the aimed zone: deviate to one of the fallback zones equiprobably.
+        return _random.Pick(info.MissFallback);
+    }
+
+    /// <summary>
+    /// Weighted zone pick for non-targeted damage. Prefers the merged profile's fallback weights when the
+    /// body carries a <see cref="BodyZoneProfileComponent"/>, otherwise the woundable's own weight table.
+    /// </summary>
+    private WoundBodyPart? PickZone(Entity<WoundableComponent> ent)
+    {
+        if (TryComp<BodyZoneProfileComponent>(ent, out var profComp)
+            && _proto.TryIndex(profComp.Profile, out var profile)
+            && profile.FallbackWeights.Count > 0)
+            return PickWeighted(profile.FallbackWeights);
+
+        if (_proto.TryIndex(ent.Comp.HitZoneWeights, out var weights) && weights.Weights.Count > 0)
+            return PickWeighted(weights.Weights);
+
+        return null;
+    }
+
+    private WoundBodyPart? PickWeighted(Dictionary<WoundBodyPart, float> weights)
+    {
+        var total = weights.Values.Sum();
         if (total <= 0)
             return null;
 
         var roll = _random.NextFloat() * total;
-        foreach (var (part, weight) in weights.Weights)
+        foreach (var (part, weight) in weights)
         {
             roll -= weight;
             if (roll <= 0)
                 return part;
         }
 
-        return weights.Weights.Keys.Last();
+        return weights.Keys.Last();
+    }
+
+    /// <summary>Per-zone severity multiplier from the body's profile; 1.0 when there is no profile.</summary>
+    private float GetZoneSeverityMultiplier(Entity<WoundableComponent> ent, WoundBodyPart part)
+    {
+        if (TryComp<BodyZoneProfileComponent>(ent, out var profComp)
+            && _proto.TryIndex(profComp.Profile, out var profile))
+            return profile.GetZone(part).SeverityMultiplier;
+
+        return 1f;
     }
 
     private static FixedPoint2 ComputeBleedRate(Wound wound)
@@ -443,13 +545,17 @@ public sealed partial class WoundSystem : EntitySystem
             tracked[w.SourceType] = acc + w.Damage;
         }
 
+        // DamageableComponent.Damage is access-locked to DamageableSystem, so read the pool through the
+        // public API (positive damage per type) instead of touching the field directly.
+        var poolDamage = _damageable.GetPositiveDamage((ent.Owner, damageable));
+
         var dirty = false;
         foreach (var (type, trackedDamage) in tracked)
         {
             if (trackedDamage <= 0)
                 continue;
 
-            var pool = damageable.Damage.DamageDict.GetValueOrDefault(type);
+            var pool = poolDamage.DamageDict.GetValueOrDefault(type);
             if (pool >= trackedDamage)
                 continue; // Pool still covers these wounds; leave them alone.
 

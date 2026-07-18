@@ -20,6 +20,8 @@ public sealed class WoundSystemTest : GameTest
 {
     private const string WoundTestMob = "WoundTestMob";
     private const string WoundTestMobNoWounds = "WoundTestMobNoWounds";
+    private const string TargetTestMob = "WoundTargetTestMob";
+    private const string TargetTestProfile = "WoundTargetTestProfile";
 
     [TestPrototypes]
     private const string Prototypes = $@"
@@ -40,6 +42,29 @@ public sealed class WoundSystemTest : GameTest
   - type: Damageable
   - type: Injurable
     damageContainer: Biological
+
+# Deterministic profile: Head always misses (chance 0 -> deviates to Chest), Chest/LeftArm always hit
+# (chance 1). Non-empty miss fallbacks force the accuracy roll to actually run rather than short-circuit.
+- type: bodyZoneProfile
+  id: {TargetTestProfile}
+  fallbackWeights:
+    Chest: 1
+  zones:
+    Head:    {{ hitChanceMelee: 0.0, hitChanceRanged: 0.0, missFallback: [ Chest ], severityMultiplier: 1.5 }}
+    Chest:   {{ hitChanceMelee: 1.0, hitChanceRanged: 1.0, missFallback: [ Head ], severityMultiplier: 1.0 }}
+    LeftArm: {{ hitChanceMelee: 1.0, hitChanceRanged: 1.0, missFallback: [ Chest ], severityMultiplier: 1.0 }}
+
+- type: entity
+  id: {TargetTestMob}
+  name: {TargetTestMob}
+  components:
+  - type: Damageable
+  - type: Injurable
+    damageContainer: Biological
+  - type: Woundable
+    maxWounds: 6
+  - type: BodyZoneProfile
+    profile: {TargetTestProfile}
 ";
 
     [Test]
@@ -203,8 +228,10 @@ public sealed class WoundSystemTest : GameTest
 
             Assert.That(woundable.Wounds.Count(w => w.Type.Id == "Burn"), Is.EqualTo(2));
 
-            var shockPoolBefore = damage.Damage.DamageDict["Shock"];
-            var heatPoolBefore = damage.Damage.DamageDict["Heat"];
+            // DamageableComponent.Damage is access-locked; read the pool through the public API instead.
+            var poolBefore = damageable.GetPositiveDamage((uid, damage));
+            poolBefore.DamageDict.TryGetValue("Shock", out var shockPoolBefore);
+            poolBefore.DamageDict.TryGetValue("Heat", out var heatPoolBefore);
 
             var shockBurn = woundable.Wounds.FindIndex(w => w.Type.Id == "Burn" && w.SourceType.Id == "Shock");
             Assert.That(shockBurn, Is.GreaterThanOrEqualTo(0));
@@ -213,8 +240,11 @@ public sealed class WoundSystemTest : GameTest
 
             // Only the Shock pool moved; the Heat pool the naive (mirror-to-canonical-type) implementation would
             // have drained instead is untouched. This is the crux of the many-to-one mapping fix.
-            Assert.That(damage.Damage.DamageDict["Heat"], Is.EqualTo(heatPoolBefore));
-            Assert.That(damage.Damage.DamageDict["Shock"], Is.LessThan(shockPoolBefore));
+            var poolAfter = damageable.GetPositiveDamage((uid, damage));
+            poolAfter.DamageDict.TryGetValue("Heat", out var heatPoolAfter);
+            poolAfter.DamageDict.TryGetValue("Shock", out var shockPoolAfter);
+            Assert.That(heatPoolAfter, Is.EqualTo(heatPoolBefore));
+            Assert.That(shockPoolAfter, Is.LessThan(shockPoolBefore));
         });
     }
 
@@ -328,6 +358,117 @@ public sealed class WoundSystemTest : GameTest
 
             Assert.That(damageable.GetTotalDamage(uid), Is.EqualTo(FixedPoint2.New(15)));
             Assert.That(entMan.HasComponent<WoundableComponent>(uid), Is.False);
+        });
+    }
+
+    [Test]
+    public async Task ForcedZoneIgnoresRollAndMultipliesSeverityNotPool()
+    {
+        var pair = Pair;
+        var server = pair.Server;
+        var entMan = server.ResolveDependency<IEntityManager>();
+        var protoMan = server.ResolveDependency<IPrototypeManager>();
+        var sysMan = server.ResolveDependency<IEntitySystemManager>();
+        var damageable = sysMan.GetEntitySystem<DamageableSystem>();
+
+        var map = await pair.CreateTestMap();
+
+        await server.WaitAssertion(() =>
+        {
+            var uid = entMan.SpawnEntity(TargetTestMob, map.MapCoords);
+            var woundable = entMan.GetComponent<WoundableComponent>(uid);
+            var blunt = protoMan.Index<DamageTypePrototype>("Blunt");
+
+            // §B3/§B5: a Forced context lands on the exact zone even though Head's hit chance is 0.0, and the
+            // per-zone severity multiplier (1.5) scales severity only - the vanilla pool is untouched.
+            damageable.ChangeDamage(uid, new DamageSpecifier(blunt, FixedPoint2.New(10)), ignoreResistances: true,
+                zoneContext: new DamageZoneContext(WoundBodyPart.Head, forced: true));
+
+            Assert.That(damageable.GetTotalDamage(uid), Is.EqualTo(FixedPoint2.New(10)));
+            Assert.That(woundable.Wounds, Has.Count.EqualTo(1));
+            Assert.That(woundable.Wounds[0].Part, Is.EqualTo(WoundBodyPart.Head));
+            Assert.That(woundable.Wounds[0].Severity, Is.EqualTo(FixedPoint2.New(15)));
+        });
+    }
+
+    [Test]
+    public async Task AimedZoneOverridesWeights()
+    {
+        var pair = Pair;
+        var server = pair.Server;
+        var entMan = server.ResolveDependency<IEntityManager>();
+        var protoMan = server.ResolveDependency<IPrototypeManager>();
+        var sysMan = server.ResolveDependency<IEntitySystemManager>();
+        var damageable = sysMan.GetEntitySystem<DamageableSystem>();
+
+        var map = await pair.CreateTestMap();
+
+        await server.WaitAssertion(() =>
+        {
+            var uid = entMan.SpawnEntity(TargetTestMob, map.MapCoords);
+            var woundable = entMan.GetComponent<WoundableComponent>(uid);
+            var blunt = protoMan.Index<DamageTypePrototype>("Blunt");
+
+            // §B2: an aimed (non-Forced) context that passes its roll wins over the weight table (which would
+            // only ever pick Chest here). LeftArm has hit chance 1.0.
+            damageable.ChangeDamage(uid, new DamageSpecifier(blunt, FixedPoint2.New(10)), ignoreResistances: true,
+                zoneContext: new DamageZoneContext(WoundBodyPart.LeftArm));
+
+            Assert.That(woundable.Wounds, Has.Count.EqualTo(1));
+            Assert.That(woundable.Wounds[0].Part, Is.EqualTo(WoundBodyPart.LeftArm));
+        });
+    }
+
+    [Test]
+    public async Task MissedAimDeviatesToFallbackZone()
+    {
+        var pair = Pair;
+        var server = pair.Server;
+        var entMan = server.ResolveDependency<IEntityManager>();
+        var protoMan = server.ResolveDependency<IPrototypeManager>();
+        var sysMan = server.ResolveDependency<IEntitySystemManager>();
+        var damageable = sysMan.GetEntitySystem<DamageableSystem>();
+
+        var map = await pair.CreateTestMap();
+
+        await server.WaitAssertion(() =>
+        {
+            var uid = entMan.SpawnEntity(TargetTestMob, map.MapCoords);
+            var woundable = entMan.GetComponent<WoundableComponent>(uid);
+            var blunt = protoMan.Index<DamageTypePrototype>("Blunt");
+
+            // §B2: Head's hit chance is 0.0, so the aimed hit always misses and deviates to its fallback (Chest).
+            damageable.ChangeDamage(uid, new DamageSpecifier(blunt, FixedPoint2.New(10)), ignoreResistances: true,
+                zoneContext: new DamageZoneContext(WoundBodyPart.Head));
+
+            Assert.That(woundable.Wounds, Has.Count.EqualTo(1));
+            Assert.That(woundable.Wounds[0].Part, Is.EqualTo(WoundBodyPart.Chest));
+        });
+    }
+
+    [Test]
+    public async Task NonTargetedDamageUsesWeightTable()
+    {
+        var pair = Pair;
+        var server = pair.Server;
+        var entMan = server.ResolveDependency<IEntityManager>();
+        var protoMan = server.ResolveDependency<IPrototypeManager>();
+        var sysMan = server.ResolveDependency<IEntitySystemManager>();
+        var damageable = sysMan.GetEntitySystem<DamageableSystem>();
+
+        var map = await pair.CreateTestMap();
+
+        await server.WaitAssertion(() =>
+        {
+            var uid = entMan.SpawnEntity(TargetTestMob, map.MapCoords);
+            var woundable = entMan.GetComponent<WoundableComponent>(uid);
+            var blunt = protoMan.Index<DamageTypePrototype>("Blunt");
+
+            // §B2: damage with no zone context falls back to the profile's weight table, which only lists Chest.
+            damageable.ChangeDamage(uid, new DamageSpecifier(blunt, FixedPoint2.New(10)), ignoreResistances: true);
+
+            Assert.That(woundable.Wounds, Has.Count.EqualTo(1));
+            Assert.That(woundable.Wounds[0].Part, Is.EqualTo(WoundBodyPart.Chest));
         });
     }
 }

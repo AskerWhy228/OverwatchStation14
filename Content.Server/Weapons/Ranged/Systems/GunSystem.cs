@@ -4,6 +4,7 @@ using Content.Server.Weapons.Ranged.Components;
 using Content.Shared.Cargo;
 using Content.Shared.Damage;
 using Content.Shared.Projectiles;
+using Content.Shared.Targeting;
 using Content.Shared.Weapons.Melee;
 using Content.Shared.Weapons.Ranged;
 using Content.Shared.Weapons.Ranged.Components;
@@ -194,6 +195,14 @@ public sealed partial class GunSystem : SharedGunSystem
 
     private void ShootOrThrow(EntityUid uid, Vector2 mapDirection, Vector2 gunVelocity, Entity<GunComponent> gun, EntityUid? user)
     {
+        // Stamp the shooter's aimed zone onto the projectile / thrown item so it is fixed at the moment of
+        // firing (FR-A5); the wound layer reads it back on impact instead of the shooter's live selection.
+        if (user is { } shooter && TryComp<TargetingComponent>(shooter, out var targeting))
+        {
+            var projZone = EnsureComp<ProjectileZoneComponent>(uid);
+            projZone.Zone = targeting.Target;
+        }
+
         if (gun.Comp.Target is { } target && !TerminatingOrDeleted(target))
         {
             var targeted = EnsureComp<TargetedProjectileComponent>(uid);

@@ -59,11 +59,13 @@ wound-treatment-sutured = sutured
 # Examine
 wound-examine-part = [color=darkgray]{ $part }:[/color] { $wounds }.
 wound-examine-entry-treated = { $wound } ({ $treatment })
+wound-examine-none = They have no visible wounds.
 wound-examinable-verb-text = Wounds
 wound-examinable-verb-message = Examine the wounds in detail.
 
 # Treatment item feedback
-wound-treatment-none-applicable = There are no wounds here you can treat with that.
+wound-treatment-none-applicable = There are no wounds you can treat with that.
+wound-treatment-none-here = Nothing to treat on that part. Wounds you could treat: { $zones }.
 wound-treatment-already-treated = That wound has already been treated.
 wound-treatment-empty = There's nothing left to use.
 wound-treatment-success = You treat { $target }'s wound.

@@ -59,11 +59,13 @@ wound-treatment-sutured = зашита
 # Осмотр
 wound-examine-part = [color=darkgray]{ $part }:[/color] { $wounds }.
 wound-examine-entry-treated = { $wound } ({ $treatment })
+wound-examine-none = Видимых ран нет.
 wound-examinable-verb-text = Раны
 wound-examinable-verb-message = Осмотреть раны подробнее.
 
 # Сообщения предметов лечения
-wound-treatment-none-applicable = Здесь нет ран, которые можно этим обработать.
+wound-treatment-none-applicable = Нет ран, которые можно этим обработать.
+wound-treatment-none-here = На этой части нечего обрабатывать. Раны есть на: { $zones }.
 wound-treatment-already-treated = Эта рана уже обработана.
 wound-treatment-empty = Больше нечего использовать.
 wound-treatment-success = Вы обрабатываете рану { $target }.

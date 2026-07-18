@@ -122,6 +122,7 @@ ui-options-header-movement = Movement
 ui-options-header-camera = Camera
 ui-options-header-interaction-basic = Basic Interaction
 ui-options-header-interaction-adv = Advanced Interaction
+ui-options-header-targeting = Body Targeting
 ui-options-header-ui = User Interface
 ui-options-header-misc = Miscellaneous
 ui-options-header-hotbar = Hotbar
@@ -144,6 +145,19 @@ ui-options-function-move-down = Move Down
 ui-options-function-move-right = Move Right
 ui-options-function-walk = Walk
 ui-options-function-toggle-knockdown = Toggle Crawling
+
+ui-options-function-target-head = Target head
+ui-options-function-target-chest = Target chest
+ui-options-function-target-left-arm = Target left arm
+ui-options-function-target-right-arm = Target right arm
+ui-options-function-target-left-hand = Target left hand
+ui-options-function-target-right-hand = Target right hand
+ui-options-function-target-left-leg = Target left leg
+ui-options-function-target-right-leg = Target right leg
+ui-options-function-target-left-foot = Target left foot
+ui-options-function-target-right-foot = Target right foot
+ui-options-function-target-cycle = Cycle target zone
+ui-options-function-target-cycle-reverse = Cycle target zone (reverse)
 
 ui-options-function-camera-rotate-left = Rotate left
 ui-options-function-camera-rotate-right = Rotate right

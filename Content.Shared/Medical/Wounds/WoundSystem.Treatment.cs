@@ -1,3 +1,4 @@
+using System.Linq;
 using Content.Shared.Charges.Components;
 using Content.Shared.Charges.Systems;
 using Content.Shared.Damage;
@@ -8,6 +9,7 @@ using Content.Shared.Interaction;
 using Content.Shared.Interaction.Events;
 using Content.Shared.Medical.Wounds.Components;
 using Content.Shared.Popups;
+using Content.Shared.Targeting;
 using Robust.Shared.Prototypes;
 
 namespace Content.Shared.Medical.Wounds;
@@ -52,9 +54,13 @@ public sealed partial class WoundSystem
         if (!TryComp<WoundableComponent>(target, out var woundable))
             return false;
 
-        if (!HasApplicableWound(ent.Comp, woundable))
+        // FR-A6: treatment is applied to the zone the user has selected, not the worst wound anywhere.
+        var zone = GetTreatmentZone(user);
+
+        if (!HasApplicableWoundOnZone(ent.Comp, woundable, zone))
         {
-            _popup.PopupClient(Loc.GetString("wound-treatment-none-applicable"), target, user);
+            // Nothing treatable here; point the user at the zones that do carry an applicable wound. No charge spent.
+            _popup.PopupClient(BuildNoWoundHereMessage(ent.Comp, woundable), target, user);
             return false;
         }
 
@@ -97,12 +103,15 @@ public sealed partial class WoundSystem
             return;
         }
 
-        // Pick the most severe untreated applicable wound.
-        var index = FindTreatableWound(ent.Comp, item, out var anyApplicableTreated);
+        // Pick the most severe untreated applicable wound on the user's selected zone (FR-A6).
+        var zone = GetTreatmentZone(args.User);
+        var index = FindTreatableWound(ent.Comp, item, zone, out var anyApplicableTreated);
         if (index < 0)
         {
-            var msg = anyApplicableTreated ? "wound-treatment-already-treated" : "wound-treatment-none-applicable";
-            _popup.PopupEntity(Loc.GetString(msg), ent, args.User);
+            var msg = anyApplicableTreated
+                ? Loc.GetString("wound-treatment-already-treated")
+                : BuildNoWoundHereMessage(item, ent.Comp);
+            _popup.PopupEntity(msg, ent, args.User);
             return;
         }
 
@@ -122,11 +131,17 @@ public sealed partial class WoundSystem
         args.Handled = true;
     }
 
-    private bool HasApplicableWound(WoundTreatmentItemComponent item, WoundableComponent comp)
+    /// <summary>The zone a treater is aiming at, defaulting to the chest when they cannot target.</summary>
+    private WoundBodyPart GetTreatmentZone(EntityUid user)
+    {
+        return TryComp<TargetingComponent>(user, out var targeting) ? targeting.Target : WoundBodyPart.Chest;
+    }
+
+    private bool HasApplicableWoundOnZone(WoundTreatmentItemComponent item, WoundableComponent comp, WoundBodyPart zone)
     {
         foreach (var wound in comp.Wounds)
         {
-            if (item.Treats.Contains(wound.Type))
+            if (wound.Part == zone && item.Treats.Contains(wound.Type))
                 return true;
         }
 
@@ -134,10 +149,11 @@ public sealed partial class WoundSystem
     }
 
     /// <summary>
-    /// Returns the index of the most severe untreated wound this item can treat, or -1 if none.
-    /// <paramref name="anyApplicableTreated"/> reports whether an applicable wound exists but is already treated.
+    /// Returns the index of the most severe untreated wound this item can treat <b>on the given zone</b>, or
+    /// -1 if none. <paramref name="anyApplicableTreated"/> reports whether an applicable wound exists on the
+    /// zone but is already treated.
     /// </summary>
-    private int FindTreatableWound(WoundableComponent comp, WoundTreatmentItemComponent item, out bool anyApplicableTreated)
+    private int FindTreatableWound(WoundableComponent comp, WoundTreatmentItemComponent item, WoundBodyPart zone, out bool anyApplicableTreated)
     {
         anyApplicableTreated = false;
         var best = -1;
@@ -146,7 +162,7 @@ public sealed partial class WoundSystem
         for (var i = 0; i < comp.Wounds.Count; i++)
         {
             var wound = comp.Wounds[i];
-            if (!item.Treats.Contains(wound.Type))
+            if (wound.Part != zone || !item.Treats.Contains(wound.Type))
                 continue;
 
             if (wound.Treatment != WoundTreatment.None)
@@ -163,6 +179,25 @@ public sealed partial class WoundSystem
         }
 
         return best;
+    }
+
+    /// <summary>
+    /// Builds the "nothing to treat here" popup, appending a hint listing the zones that do carry an
+    /// untreated wound this item can treat (FR-A6).
+    /// </summary>
+    private string BuildNoWoundHereMessage(WoundTreatmentItemComponent item, WoundableComponent comp)
+    {
+        var zones = comp.Wounds
+            .Where(w => w.Treatment == WoundTreatment.None && item.Treats.Contains(w.Type))
+            .Select(w => w.Part)
+            .Distinct()
+            .Select(part => Loc.GetString(WoundZoneNames.GetLocId(part)))
+            .ToList();
+
+        if (zones.Count == 0)
+            return Loc.GetString("wound-treatment-none-applicable");
+
+        return Loc.GetString("wound-treatment-none-here", ("zones", string.Join(", ", zones)));
     }
 
     /// <summary>

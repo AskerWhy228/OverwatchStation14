@@ -167,6 +167,8 @@
   save: false
   components:
   - type: Woundable
+  - type: BodyZoneProfile
+  - type: Targeting
   - type: Hunger
   - type: Thirst
   - type: Barotrauma

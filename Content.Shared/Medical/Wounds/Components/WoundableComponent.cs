@@ -10,7 +10,7 @@ namespace Content.Shared.Medical.Wounds.Components;
 /// <see cref="WoundBodyPart"/>. Wounds are a parallel accounting layer alongside the vanilla
 /// <see cref="Damage.Components.DamageableComponent"/> and never change its balance in phase 0.
 /// </summary>
-[RegisterComponent, NetworkedComponent, AutoGenerateComponentState]
+[RegisterComponent, NetworkedComponent, AutoGenerateComponentState(raiseAfterAutoHandleState: true)]
 public sealed partial class WoundableComponent : Component
 {
     /// <summary>

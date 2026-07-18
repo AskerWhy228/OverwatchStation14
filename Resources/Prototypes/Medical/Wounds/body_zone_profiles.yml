@@ -1,0 +1,45 @@
+# Merged per-body zone profile (spec §B2): weighted fallback for non-targeted damage + aimed hit chances,
+# miss fallbacks and per-zone severity multipliers in one place, one per body type.
+#
+# hitChanceMelee / hitChanceRanged  - odds an aimed hit lands on the zone (FR-A4). The trade-off that makes
+#                                     targeting a choice rather than a free headshot.
+# missFallback                       - zones the hit deviates to on a failed roll (equiprobable). Empty means
+#                                     the zone is always hit (the roll is skipped).
+# severityMultiplier                 - headshot balance knob (§B4.2). Head is fragile, extremities tougher.
+#                                     Affects wound severity/stage only, never vanilla TTK while mirroring
+#                                     is live (§B5).
+
+- type: bodyZoneProfile
+  id: DefaultHumanoid
+  displayCap: 50
+  fallbackWeights:
+    Chest: 40
+    Head: 10
+    LeftArm: 10
+    RightArm: 10
+    LeftHand: 2.5
+    RightHand: 2.5
+    LeftLeg: 10
+    RightLeg: 10
+    LeftFoot: 2.5
+    RightFoot: 2.5
+  # Falling weights legs/feet heavy - "free atmosphere" for fall damage (§B3). Reserved for a future fall
+  # source that tags its damage; unused until then.
+  fallingWeights:
+    LeftLeg: 25
+    RightLeg: 25
+    LeftFoot: 20
+    RightFoot: 20
+    Chest: 8
+    Head: 2
+  zones:
+    Head:      { hitChanceMelee: 0.70, hitChanceRanged: 0.60, missFallback: [ Chest ], severityMultiplier: 1.4 }
+    Chest:     { hitChanceMelee: 1.00, hitChanceRanged: 0.95, missFallback: [ ], severityMultiplier: 1.0 }
+    LeftArm:   { hitChanceMelee: 0.80, hitChanceRanged: 0.70, missFallback: [ Chest, LeftHand ], severityMultiplier: 1.0 }
+    RightArm:  { hitChanceMelee: 0.80, hitChanceRanged: 0.70, missFallback: [ Chest, RightHand ], severityMultiplier: 1.0 }
+    LeftHand:  { hitChanceMelee: 0.60, hitChanceRanged: 0.45, missFallback: [ LeftArm ], severityMultiplier: 0.8 }
+    RightHand: { hitChanceMelee: 0.60, hitChanceRanged: 0.45, missFallback: [ RightArm ], severityMultiplier: 0.8 }
+    LeftLeg:   { hitChanceMelee: 0.80, hitChanceRanged: 0.70, missFallback: [ Chest, LeftFoot ], severityMultiplier: 1.0 }
+    RightLeg:  { hitChanceMelee: 0.80, hitChanceRanged: 0.70, missFallback: [ Chest, RightFoot ], severityMultiplier: 1.0 }
+    LeftFoot:  { hitChanceMelee: 0.60, hitChanceRanged: 0.45, missFallback: [ LeftLeg ], severityMultiplier: 0.8 }
+    RightFoot: { hitChanceMelee: 0.60, hitChanceRanged: 0.45, missFallback: [ RightLeg ], severityMultiplier: 0.8 }

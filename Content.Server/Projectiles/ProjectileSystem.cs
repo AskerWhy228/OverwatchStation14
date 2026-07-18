@@ -9,6 +9,7 @@ using Content.Shared.Damage.Systems;
 using Content.Shared.Database;
 using Content.Shared.FixedPoint;
 using Content.Shared.Projectiles;
+using Content.Shared.Weapons.Ranged.Components;
 using Robust.Shared.Physics.Events;
 using Robust.Shared.Player;
 
@@ -58,7 +59,12 @@ public sealed partial class ProjectileSystem : SharedProjectileSystem
         }
         var deleted = Deleted(target);
 
-        if (_damageableSystem.TryChangeDamage((target, damageableComponent), ev.Damage, out var damage, component.IgnoreResistances, origin: component.Shooter) && Exists(component.Shooter))
+        // The zone the shooter aimed at, captured at fire time (FR-A5) - null on unaimed projectiles.
+        DamageZoneContext? zoneContext = null;
+        if (TryComp<ProjectileZoneComponent>(uid, out var projZone))
+            zoneContext = new DamageZoneContext(projZone.Zone, ranged: true);
+
+        if (_damageableSystem.TryChangeDamage((target, damageableComponent), ev.Damage, out var damage, component.IgnoreResistances, origin: component.Shooter, zoneContext: zoneContext) && Exists(component.Shooter))
         {
             if (!deleted)
             {
